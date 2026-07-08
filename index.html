@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>The Vet Gate — Endurance Ride</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #efe9da; -webkit-text-size-adjust: 100%; }
+  button { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ============================================================
+   THE VET GATE — an endurance riding prototype
+   Design: pre-dawn start → midday heat → golden-hour finish.
+   The sky changes each loop, like a real 100-miler.
+   Vet card styled after a real FEI ride card (mono data).
+   ============================================================ */
+
+const FONTS = `
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Karla:wght@400;500;700&display=swap');
+@keyframes legSwing { 0%{transform:rotate(22deg)} 50%{transform:rotate(-22deg)} 100%{transform:rotate(22deg)} }
+@keyframes bob { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-3px)} }
+@keyframes tailSway { 0%,100%{transform:rotate(4deg)} 50%{transform:rotate(-6deg)} }
+@keyframes pulseDot { 0%,100%{opacity:1} 50%{opacity:.25} }
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001s !important; }
+}
+`;
+
+/* ---------- horses ---------- */
+const BREEDS = [
+  {
+    id: "arabian", name: "Zafira", breed: "Arabian", coat: "Flea-bitten grey",
+    body: "#d8d4d0", shade: "#b7b1ac", mane: "#8a8480", sheen: null,
+    blurb: "Classic desert endurance blood. Recovers at the vet gate like nothing happened.",
+    stats: { speed: 3, recovery: 5, resilience: 3, metabolic: 4 },
+  },
+  {
+    id: "teke", name: "Altyn", breed: "Akhal-Teke", coat: "Metallic buckskin",
+    body: "#d8a94e", shade: "#b8862f", mane: "#3a2c1a", sheen: "#f6e3a8",
+    blurb: "Fast and heat-hardened, but drinks poorly on trail. Watch her hydration.",
+    stats: { speed: 5, recovery: 3, resilience: 3, metabolic: 2 },
+  },
+  {
+    id: "anglo", name: "Bosco", breed: "Anglo-Arab", coat: "Blood bay",
+    body: "#7a3b22", shade: "#5c2b16", mane: "#241610", sheen: null,
+    blurb: "Big trot, iron legs. Forgiving on rocky footing, a little slower to pulse down.",
+    stats: { speed: 4, recovery: 2, resilience: 5, metabolic: 3 },
+  },
+  {
+    id: "mustang", name: "Juniper", breed: "Mustang", coat: "Grullo dun",
+    body: "#8d8578", shade: "#6e675c", mane: "#2e2a24", sheen: null,
+    blurb: "Range-bred all-rounder. No single strength, no real weakness.",
+    stats: { speed: 3, recovery: 4, resilience: 4, metabolic: 4 },
+  },
+];
+
+/* ---------- ride structure ---------- */
+const LOOPS = [
+  { km: 14, label: "Loop 1 · Ridgeline", heat: 0.8, timeOfDay: "05:40", skyName: "pre-dawn" },
+  { km: 12, label: "Loop 2 · Canyon", heat: 1.35, timeOfDay: "11:20", skyName: "midday" },
+  { km: 10, label: "Loop 3 · River Trail", heat: 1.0, timeOfDay: "16:05", skyName: "golden hour" },
+];
+
+const SKIES = [
+  { top: "#1d2440", mid: "#4a3f63", low: "#c97b5a", sun: "#f2d3a0", sunY: 78, ground: "#3a3450", hillA: "#2b2a48", hillB: "#453a5c", star: true },
+  { top: "#7db4d8", mid: "#a9cfe4", low: "#e8e2c9", sun: "#fff6d8", sunY: 14, ground: "#b39a6b", hillA: "#8f7a52", hillB: "#a68d5f", star: false },
+  { top: "#5a6a9c", mid: "#d9925f", low: "#f0c07a", sun: "#ffd98a", sunY: 55, ground: "#7d6247", hillA: "#5e4a38", hillB: "#75593f", star: false },
+];
+
+const PACES = [
+  { id: 0, name: "Halt", kmh: 0, hr: 46, drain: 0.02, anim: 0 },
+  { id: 1, name: "Walk", kmh: 6, hr: 72, drain: 0.06, anim: 1.15 },
+  { id: 2, name: "Trot", kmh: 13, hr: 112, drain: 0.13, anim: 0.62 },
+  { id: 3, name: "Canter", kmh: 18, hr: 142, drain: 0.22, anim: 0.46 },
+  { id: 4, name: "Gallop", kmh: 24, hr: 172, drain: 0.36, anim: 0.34 },
+];
+
+const TERRAIN = {
+  flat:  { name: "Good trail", hr: 0,  stress: 0.0, color: "#9c855c" },
+  sand:  { name: "Deep sand", hr: 12, stress: 0.05, color: "#c4a86b" },
+  hill:  { name: "Climb", hr: 26, stress: 0.04, color: "#7d6a48" },
+  rocky: { name: "Rocky footing", hr: 10, stress: 0.28, color: "#8a8178" },
+};
+
+function makeLoopTerrain(km, seed) {
+  const types = ["flat", "flat", "sand", "hill", "flat", "rocky", "flat", "hill", "rocky", "flat", "sand", "flat"];
+  const segs = [];
+  let at = 0, i = seed;
+  while (at < km) {
+    const len = 0.8 + ((i * 7919) % 100) / 100 * 1.6;
+    segs.push({ type: types[i % types.length], from: at, to: Math.min(km, at + len) });
+    at += len; i++;
+  }
+  const waters = [];
+  for (let w = 3.2; w < km - 1; w += 3.8) waters.push({ from: w, to: w + 0.45 });
+  return { segs, waters };
+}
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const fmtTime = (min) => `${Math.floor(min / 60)}:${String(Math.floor(min % 60)).padStart(2, "0")}`;
+
+/* ============================================================
+   HORSE — stylised side-view SVG with gait animation
+   ============================================================ */
+function Horse({ horse, animDur, scale = 1, flipTail = false }) {
+  const legStyle = (delay) => ({
+    transformOrigin: "0px 0px",
+    animation: animDur ? `legSwing ${animDur}s ease-in-out infinite` : "none",
+    animationDelay: `${delay * (animDur || 0)}s`,
+  });
+  const g = `url(#sheen-${horse.id})`;
+  const bodyFill = horse.sheen ? g : horse.body;
+  return (
+    <svg width={210 * scale} height={150 * scale} viewBox="0 0 210 150" style={{ overflow: "visible" }}>
+      <defs>
+        {horse.sheen && (
+          <linearGradient id={`sheen-${horse.id}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={horse.sheen} />
+            <stop offset="45%" stopColor={horse.body} />
+            <stop offset="100%" stopColor={horse.shade} />
+          </linearGradient>
+        )}
+      </defs>
+      {/* hind legs (behind body) */}
+      <g transform="translate(76,88)">
+        <g style={legStyle(0)}>
+          <path d="M0,-4 C7,6 6,20 4,30 L7,44 L1,45 L-2,31 C-6,20 -7,6 -8,-2 Z" fill={horse.shade} />
+          <rect x="0" y="43" width="9" height="5" rx="2" fill="#2b2622" />
+        </g>
+      </g>
+      <g transform="translate(128,88)">
+        <g style={legStyle(0.5)}>
+          <path d="M-1,-4 C4,8 3,22 2,32 L4,44 L-2,45 L-4,31 C-7,18 -7,6 -7,-2 Z" fill={horse.shade} />
+          <rect x="-4" y="43" width="9" height="5" rx="2" fill="#2b2622" />
+        </g>
+      </g>
+      {/* tail */}
+      <g transform="translate(56,62)" style={{ transformOrigin: "0 0", animation: animDur ? `tailSway ${animDur * 2}s ease-in-out infinite` : "none" }}>
+        <path d="M0,0 C-14,8 -18,30 -12,52 C-8,38 -6,20 2,8 Z" fill={horse.mane} />
+      </g>
+      {/* body */}
+      <g style={{ animation: animDur ? `bob ${animDur}s ease-in-out infinite` : "none" }}>
+        <path d="M60,64 C58,50 74,42 96,42 C114,42 128,44 136,50 C142,40 150,28 160,20 C166,15 174,12 178,14 C182,16 181,22 178,26 C186,26 190,30 188,34 C186,38 178,40 172,42 C166,52 158,60 150,66 C150,78 142,90 122,92 C98,94 66,90 60,74 Z"
+          fill={bodyFill} stroke={horse.shade} strokeWidth="1.2" />
+        {/* mane */}
+        <path d="M138,48 C146,38 154,26 162,19 C164,22 162,30 156,38 C150,46 144,50 140,52 Z" fill={horse.mane} />
+        {/* eye + muzzle */}
+        <circle cx="172" cy="21" r="1.8" fill="#1c1712" />
+        <path d="M178,26 C182,26 185,28 186,31" stroke={horse.shade} strokeWidth="1.4" fill="none" strokeLinecap="round" />
+        {/* saddle + pad */}
+        <path d="M92,44 C104,42 116,43 122,46 L120,58 C110,60 98,60 92,57 Z" fill="#7a2e28" stroke="#4a1c18" strokeWidth="1" />
+        <rect x="88" y="43" width="38" height="4" rx="2" fill="#e3dccb" opacity="0.9" />
+        <path d="M106,58 L106,74" stroke="#4a1c18" strokeWidth="2" />
+      </g>
+      {/* front legs */}
+      <g transform="translate(120,88)">
+        <g style={legStyle(0.5)}>
+          <path d="M0,-6 C5,6 5,20 3,31 L5,44 L-1,45 L-3,31 C-5,18 -5,4 -6,-4 Z" fill={bodyFill} stroke={horse.shade} strokeWidth="0.8" />
+          <rect x="-2" y="43" width="9" height="5" rx="2" fill="#2b2622" />
+        </g>
+      </g>
+      <g transform="translate(84,88)">
+        <g style={legStyle(0)}>
+          <path d="M0,-6 C5,6 5,20 3,31 L5,44 L-1,45 L-3,31 C-5,18 -5,4 -6,-4 Z" fill={bodyFill} stroke={horse.shade} strokeWidth="0.8" />
+          <rect x="-2" y="43" width="9" height="5" rx="2" fill="#2b2622" />
+        </g>
+      </g>
+    </svg>
+  );
+}
+
+/* ============================================================
+   SCENE — parallax trail with day-cycle sky
+   ============================================================ */
+function Scene({ loopIdx, dist, pace, horse, nearWater, drinking }) {
+  const sky = SKIES[loopIdx];
+  const p1 = -(dist * 140) % 400;
+  const p2 = -(dist * 340) % 400;
+  const hillPath = "M0,80 Q50,30 100,64 T200,50 T300,74 T400,44 L400,120 L0,120 Z";
+  const hillPath2 = "M0,90 Q60,56 120,84 T240,70 T360,90 T400,78 L400,120 L0,120 Z";
+  return (
+    <div style={{ position: "relative", height: 240, overflow: "hidden", background: `linear-gradient(${sky.top}, ${sky.mid} 55%, ${sky.low} 85%)` }}>
+      {sky.star && [...Array(14)].map((_, i) => (
+        <div key={i} style={{ position: "absolute", left: `${(i * 67) % 100}%`, top: `${(i * 37) % 45}%`, width: 2, height: 2, borderRadius: 2, background: "#e8e2f0", opacity: 0.4 + (i % 3) * 0.2 }} />
+      ))}
+      <div style={{ position: "absolute", right: "16%", top: sky.sunY, width: 42, height: 42, borderRadius: 42, background: sky.sun, boxShadow: `0 0 46px 18px ${sky.sun}55` }} />
+      <svg width="200%" height="120" style={{ position: "absolute", bottom: 66, left: p1 }} preserveAspectRatio="none" viewBox="0 0 400 120">
+        <path d={hillPath} fill={sky.hillA} /><path d={hillPath} fill={sky.hillA} transform="translate(400,0)" />
+      </svg>
+      <svg width="200%" height="120" style={{ position: "absolute", bottom: 46, left: p2 }} preserveAspectRatio="none" viewBox="0 0 400 120">
+        <path d={hillPath2} fill={sky.hillB} /><path d={hillPath2} fill={sky.hillB} transform="translate(400,0)" />
+      </svg>
+      <div style={{ position: "absolute", bottom: 0, width: "100%", height: 52, background: sky.ground }} />
+      <div style={{ position: "absolute", bottom: 40, width: "100%", height: 4, background: "#00000022" }} />
+      {nearWater && (
+        <div style={{ position: "absolute", bottom: 30, right: 18, textAlign: "center" }}>
+          <div style={{ width: 58, height: 14, borderRadius: "50%", background: "#5f8fb2", border: "2px solid #47708f", boxShadow: "inset 0 3px 5px #ffffff44" }} />
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, color: "#e8f0f6", marginTop: 3, letterSpacing: 1 }}>WATER</div>
+        </div>
+      )}
+      <div style={{ position: "absolute", bottom: 8, left: 18 }}>
+        <Horse horse={horse} animDur={drinking ? 0 : PACES[pace].anim} scale={0.92} />
+        {drinking && <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#eef4f8", marginTop: -8 }}>drinking…</div>}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   SMALL UI PIECES
+   ============================================================ */
+const mono = { fontFamily: "'IBM Plex Mono', monospace" };
+const cardStyle = { background: "#fdfbf5", border: "1.5px solid #d9d2c0", borderRadius: 12 };
+
+function Bar({ value, max = 100, color, warnBelow }) {
+  const pct = clamp((value / max) * 100, 0, 100);
+  const warn = warnBelow != null && value < warnBelow;
+  return (
+    <div style={{ height: 8, background: "#e5decb", borderRadius: 6, overflow: "hidden" }}>
+      <div style={{ width: `${pct}%`, height: "100%", borderRadius: 6, background: warn ? "#c2452d" : color, transition: "width .3s" }} />
+    </div>
+  );
+}
+
+function VetRow({ label, value, grade, ok }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "9px 0", borderBottom: "1px dashed #cfc7b2" }}>
+      <span style={{ fontSize: 13, color: "#4a4336" }}>{label}</span>
+      <span style={{ ...mono, fontSize: 13, fontWeight: 600, color: ok === false ? "#b03a24" : ok === true ? "#2e6b3f" : "#33302a" }}>
+        {value}{grade && <span style={{ color: "#8a8272", fontWeight: 400 }}> · {grade}</span>}
+      </span>
+    </div>
+  );
+}
+
+/* ============================================================
+   MAIN GAME
+   ============================================================ */
+function EnduranceRide() {
+  const [phase, setPhase] = useState("stable"); // stable | ride | gate | vetting | hold | results | eliminated
+  const [horse, setHorse] = useState(BREEDS[0]);
+  const [loopIdx, setLoopIdx] = useState(0);
+
+  const [pace, setPace] = useState(1);
+  const [dist, setDist] = useState(0);
+  const [hr, setHr] = useState(52);
+  const [hyd, setHyd] = useState(96);
+  const [gut, setGut] = useState(92);
+  const [stress, setStress] = useState(0);
+  const [rideMin, setRideMin] = useState(0);
+  const [totalMin, setTotalMin] = useState(0);
+  const [lytes, setLytes] = useState(3);
+  const [drinking, setDrinking] = useState(0);
+  const [terrainKey, setTerrainKey] = useState("flat");
+  const [notice, setNotice] = useState(null);
+
+  const [gateMin, setGateMin] = useState(0);
+  const [spongeCd, setSpongeCd] = useState(0);
+  const [vetCard, setVetCard] = useState(null);
+  const [holdMin, setHoldMin] = useState(0);
+  const [elimReason, setElimReason] = useState("");
+  const [bcNotes, setBcNotes] = useState([]);
+
+  const loop = LOOPS[loopIdx];
+  const course = useRef(makeLoopTerrain(LOOPS[0].km, 3));
+  const noticeTimer = useRef(null);
+
+  const say = useCallback((msg) => {
+    setNotice(msg);
+    clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), 3000);
+  }, []);
+
+  const startLoop = (idx) => {
+    course.current = makeLoopTerrain(LOOPS[idx].km, idx * 5 + 3);
+    setLoopIdx(idx); setDist(0); setRideMin(0); setPace(1); setDrinking(0);
+    setPhase("ride");
+  };
+
+  /* ---------- RIDE TICK ---------- */
+  useEffect(() => {
+    if (phase !== "ride") return;
+    const iv = setInterval(() => {
+      const dt = 0.14; // game minutes per tick
+      setRideMin((m) => m + dt);
+      setTotalMin((m) => m + dt);
+      setDrinking((d) => Math.max(0, d - 1));
+
+      setDist((d) => {
+        const moving = drinking > 0 ? 0 : PACES[pace].kmh / 60;
+        const nd = d + moving * dt;
+        const seg = course.current.segs.find((s) => nd >= s.from && nd < s.to);
+        setTerrainKey(seg ? seg.type : "flat");
+        if (nd >= loop.km) setPhase("gate");
+        return Math.min(nd, loop.km);
+      });
+
+      const terr = TERRAIN[terrainKey];
+      const effPace = drinking > 0 ? PACES[0] : PACES[pace];
+
+      setHyd((h) => {
+        let nh = h - effPace.drain * loop.heat * dt * (5 - horse.stats.metabolic) * 0.55;
+        if (drinking > 0) nh += 1.6;
+        return clamp(nh, 0, 100);
+      });
+      setGut((g) => {
+        let ng = g - (hyd < 45 ? 0.09 : 0.02) * dt * 10;
+        if (drinking > 0) ng += 0.5;
+        return clamp(ng, 0, 100);
+      });
+      setStress((s) => {
+        const add = (pace >= 3 ? 0.06 : 0) + (pace >= 2 ? terr.stress : terr.stress * 0.3);
+        return clamp(s + add * dt * (6 - horse.stats.resilience) * 0.35, 0, 100);
+      });
+      setHr((cur) => {
+        const dehydration = (100 - hyd) * 0.35;
+        const target = effPace.hr + terr.hr + dehydration * loop.heat;
+        const k = target > cur ? 0.14 : 0.05 + horse.stats.recovery * 0.012;
+        return cur + (target - cur) * k;
+      });
+    }, 100);
+    return () => clearInterval(iv);
+  }, [phase, pace, drinking, terrainKey, hyd, loop, horse]);
+
+  /* ---------- warnings & pulls on trail ---------- */
+  useEffect(() => {
+    if (phase !== "ride") return;
+    if (stress > 62 && stress < 66) say("Her stride feels slightly uneven. Rocky ground at speed is taking a toll.");
+    if (hyd < 30 && hyd > 28) say("She's tucked up and dry. Find water — a metabolic pull ends the ride.");
+    if (hyd <= 6) { setElimReason("Metabolic pull: severe dehydration on trail. The ride vet was radioed and treatment started immediately."); setPhase("eliminated"); }
+  }, [stress, hyd, phase, say]);
+
+  /* ---------- GATE TICK (crewing area, clock running) ---------- */
+  useEffect(() => {
+    if (phase !== "gate") return;
+    setGateMin(0);
+    const iv = setInterval(() => {
+      const dt = 0.28;
+      setGateMin((g) => {
+        const ng = g + dt;
+        if (ng >= 20) { setElimReason("Failure to present: heart rate did not reach 64 bpm within the 20-minute window."); setPhase("eliminated"); }
+        return ng;
+      });
+      setTotalMin((m) => m + dt);
+      setSpongeCd((c) => Math.max(0, c - 1));
+      setHr((cur) => {
+        const rest = 44 + (100 - hyd) * 0.22 + stress * 0.08;
+        return cur + (rest - cur) * (0.035 + horse.stats.recovery * 0.011);
+      });
+      setHyd((h) => clamp(h + 0.05, 0, 100));
+    }, 100);
+    return () => clearInterval(iv);
+  }, [phase, horse, hyd, stress]);
+
+  const sponge = () => {
+    if (spongeCd > 0) return;
+    setHr((h) => Math.max(45, h - 3.5));
+    setSpongeCd(14);
+  };
+
+  const present = () => {
+    const hr1 = Math.round(hr);
+    const criRise = Math.round(clamp(stress * 0.12 + (100 - hyd) * 0.06 - horse.stats.recovery, -2, 12));
+    const hr2 = hr1 + Math.max(0, criRise);
+    const lame = stress > 55 && Math.random() < (stress - 55) / 55;
+    const gutGrade = gut > 70 ? "A" : gut > 45 ? "B" : gut > 25 ? "C" : "D";
+    const skinGrade = hyd > 70 ? "A" : hyd > 50 ? "B" : hyd > 30 ? "C" : "D";
+    const card = { hr1, hr2, lame, gutGrade, skinGrade, gait: lame ? "Grade 2 lameness, LF" : stress > 45 ? "Sound, slightly short in front" : "Sound, forward",
+      metabolic: skinGrade === "D" || gutGrade === "D" };
+    setVetCard(card);
+    setPhase("vetting");
+    setBcNotes((n) => [...n, { loop: loopIdx + 1, presentation: Math.round(gateMin * 10) / 10, hr1, gutGrade, skinGrade }]);
+  };
+
+  const resolveVetting = () => {
+    if (vetCard.lame) { setElimReason(`Eliminated at the trot-out: ${vetCard.gait}. She'll be fine with rest — the check did its job.`); setPhase("eliminated"); return; }
+    if (vetCard.metabolic) { setElimReason("Vet pull on metabolics: poor gut sounds and skin tenting. Fluids started; she'll recover, but her day is done."); setPhase("eliminated"); return; }
+    if (loopIdx === LOOPS.length - 1) { setPhase("results"); return; }
+    setPhase("hold"); setHoldMin(0);
+  };
+
+  /* ---------- HOLD TICK (mandatory rest, horse eats & drinks) ---------- */
+  useEffect(() => {
+    if (phase !== "hold") return;
+    const iv = setInterval(() => {
+      setHoldMin((h) => {
+        const nh = h + 0.9;
+        if (nh >= 40) startLoop(loopIdx + 1);
+        return Math.min(nh, 40);
+      });
+      setHyd((h) => clamp(h + 0.85, 0, 100));
+      setGut((g) => clamp(g + 0.7, 0, 100));
+      setHr((c) => c + (46 - c) * 0.06);
+      setStress((s) => Math.max(0, s - 0.35));
+      setTotalMin((m) => m + 0.9);
+    }, 100);
+    return () => clearInterval(iv);
+  }, [phase, loopIdx]);
+
+  /* ---------- actions on trail ---------- */
+  const nearWater = course.current.waters.some((w) => dist >= w.from - 0.15 && dist <= w.to);
+  const drink = () => { if (!nearWater || drinking > 0) return; setDrinking(30); say("She drops her head and drinks long. Good mare."); };
+  const doLytes = () => {
+    if (lytes <= 0) return;
+    setLytes((l) => l - 1); setGut((g) => clamp(g + 12, 0, 100)); setHyd((h) => clamp(h + 4, 0, 100));
+    say("Electrolyte syringe given. She'll drink better at the next water.");
+  };
+
+  const bcScore = Math.round(hyd * 0.4 + gut * 0.3 + (100 - stress) * 0.3);
+
+  /* ============================================================ RENDER ============================================================ */
+  const shell = { maxWidth: 430, margin: "0 auto", minHeight: "100vh", background: "#efe9da", fontFamily: "'Karla', sans-serif", color: "#33302a" };
+  const h1 = { fontFamily: "'Fraunces', serif", fontWeight: 700 };
+  const btn = (active, disabled) => ({
+    padding: "10px 0", flex: 1, borderRadius: 9, border: "1.5px solid " + (active ? "#5a4632" : "#c9c0aa"),
+    background: active ? "#5a4632" : "#faf6ec", color: active ? "#f5efe0" : disabled ? "#b3ab97" : "#4a4336",
+    fontFamily: "'Karla', sans-serif", fontWeight: 700, fontSize: 13, cursor: disabled ? "default" : "pointer",
+  });
+  const bigBtn = (color = "#5a4632", disabled = false) => ({
+    width: "100%", padding: "14px 0", borderRadius: 11, border: "none", background: disabled ? "#c5bda8" : color,
+    color: "#f7f2e4", fontFamily: "'Karla', sans-serif", fontWeight: 700, fontSize: 15, cursor: disabled ? "default" : "pointer",
+  });
+
+  /* ---------- STABLE ---------- */
+  if (phase === "stable") return (
+    <div style={shell}><style>{FONTS}</style>
+      <div style={{ padding: "26px 20px 14px" }}>
+        <div style={{ ...mono, fontSize: 11, letterSpacing: 2.5, color: "#8a8272" }}>36 KM · 3 LOOPS · 3 VET GATES</div>
+        <h1 style={{ ...h1, fontSize: 34, margin: "6px 0 4px", lineHeight: 1.05 }}>The Vet Gate</h1>
+        <p style={{ fontSize: 14, color: "#5c5546", margin: 0 }}>An endurance ride. Speed wins nothing if your horse can't pass the vet. <em>To finish is to win.</em></p>
+      </div>
+      <div style={{ padding: "0 16px 30px", display: "grid", gap: 12 }}>
+        {BREEDS.map((b) => (
+          <button key={b.id} onClick={() => { setHorse(b); startLoop(0); }}
+            style={{ ...cardStyle, textAlign: "left", padding: 14, cursor: "pointer", display: "flex", gap: 10, alignItems: "center" }}>
+            <div style={{ flexShrink: 0, marginLeft: -8 }}><Horse horse={b} animDur={0} scale={0.62} /></div>
+            <div>
+              <div style={{ ...h1, fontSize: 19 }}>{b.name} <span style={{ fontWeight: 400, fontSize: 13, color: "#8a8272" }}>· {b.breed}, {b.coat.toLowerCase()}</span></div>
+              <div style={{ fontSize: 12.5, color: "#5c5546", margin: "3px 0 6px" }}>{b.blurb}</div>
+              <div style={{ ...mono, fontSize: 10.5, color: "#6e6753" }}>
+                SPD {"●".repeat(b.stats.speed)}{"○".repeat(5 - b.stats.speed)}  RCV {"●".repeat(b.stats.recovery)}{"○".repeat(5 - b.stats.recovery)}<br />
+                LEG {"●".repeat(b.stats.resilience)}{"○".repeat(5 - b.stats.resilience)}  HYD {"●".repeat(b.stats.metabolic)}{"○".repeat(5 - b.stats.metabolic)}
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  /* ---------- RIDE ---------- */
+  if (phase === "ride") return (
+    <div style={shell}><style>{FONTS}</style>
+      <div style={{ padding: "12px 16px 8px", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div><span style={{ ...h1, fontSize: 17 }}>{loop.label}</span> <span style={{ ...mono, fontSize: 11, color: "#8a8272" }}>{loop.timeOfDay} · {loop.skyName}</span></div>
+        <div style={{ ...mono, fontSize: 12 }}>{dist.toFixed(1)} / {loop.km} km</div>
+      </div>
+      <div style={{ margin: "0 12px", borderRadius: 14, overflow: "hidden", border: "1.5px solid #d9d2c0" }}>
+        <Scene loopIdx={loopIdx} dist={dist} pace={pace} horse={horse} nearWater={nearWater} drinking={drinking > 0} />
+      </div>
+      <div style={{ padding: "10px 16px 4px", minHeight: 30 }}>
+        {notice ? <div style={{ fontSize: 12.5, color: "#7a3b22", fontStyle: "italic" }}>{notice}</div>
+          : <div style={{ ...mono, fontSize: 11, color: "#8a8272" }}>{TERRAIN[terrainKey].name.toUpperCase()} · ride time {fmtTime(rideMin)}</div>}
+      </div>
+      <div style={{ margin: "4px 12px", ...cardStyle, padding: "12px 14px", display: "grid", gridTemplateColumns: "88px 1fr", gap: "10px 14px", alignItems: "center" }}>
+        <div>
+          <span style={{ ...mono, fontSize: 30, fontWeight: 600, color: hr > 150 ? "#b03a24" : "#33302a" }}>{Math.round(hr)}</span>
+          <span style={{ ...mono, fontSize: 11, color: "#8a8272" }}> bpm</span>
+          <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 7, background: "#b03a24", marginLeft: 6, animation: `pulseDot ${60 / Math.max(40, hr)}s infinite` }} />
+        </div>
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#6e6753" }}><span>Hydration</span><span style={mono}>{Math.round(hyd)}</span></div>
+          <Bar value={hyd} color="#4d7ea8" warnBelow={35} />
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#6e6753", marginTop: 6 }}><span>Gut sounds</span><span style={mono}>{Math.round(gut)}</span></div>
+          <Bar value={gut} color="#6e8b4e" warnBelow={35} />
+        </div>
+      </div>
+      <div style={{ padding: "8px 12px", display: "flex", gap: 6 }}>
+        {PACES.map((p) => <button key={p.id} onClick={() => setPace(p.id)} style={btn(pace === p.id)} disabled={drinking > 0}>{p.name}</button>)}
+      </div>
+      <div style={{ padding: "0 12px 24px", display: "flex", gap: 8 }}>
+        <button onClick={drink} disabled={!nearWater || drinking > 0} style={{ ...bigBtn("#4d7ea8", !nearWater || drinking > 0), flex: 1.4 }}>
+          {nearWater ? "Stop & let her drink" : "No water nearby"}
+        </button>
+        <button onClick={doLytes} disabled={lytes <= 0} style={{ ...bigBtn("#6e8b4e", lytes <= 0), flex: 1 }}>Electrolytes ({lytes})</button>
+      </div>
+    </div>
+  );
+
+  /* ---------- GATE (crewing) ---------- */
+  if (phase === "gate") return (
+    <div style={shell}><style>{FONTS}</style>
+      <div style={{ padding: "24px 20px 8px" }}>
+        <div style={{ ...mono, fontSize: 11, letterSpacing: 2, color: "#8a8272" }}>VET GATE {loopIdx + 1} · CREWING AREA</div>
+        <h1 style={{ ...h1, fontSize: 26, margin: "4px 0" }}>Pulse down to 64</h1>
+        <p style={{ fontSize: 13.5, color: "#5c5546" }}>The clock keeps running until you present. Cool her, but present the moment she's ready.</p>
+      </div>
+      <div style={{ margin: "6px 16px", ...cardStyle, padding: 18, textAlign: "center" }}>
+        <div style={{ ...mono, fontSize: 56, fontWeight: 600, color: hr <= 64 ? "#2e6b3f" : "#b03a24" }}>{Math.round(hr)}</div>
+        <div style={{ ...mono, fontSize: 11, color: "#8a8272" }}>BPM · CRITERIA 64</div>
+        <div style={{ marginTop: 12, ...mono, fontSize: 13, color: gateMin > 15 ? "#b03a24" : "#4a4336" }}>
+          window: {Math.max(0, 20 - gateMin).toFixed(1)} min remaining
+        </div>
+      </div>
+      <div style={{ padding: "14px 16px", display: "grid", gap: 10 }}>
+        <button onClick={sponge} disabled={spongeCd > 0} style={bigBtn("#4d7ea8", spongeCd > 0)}>
+          {spongeCd > 0 ? "Sponging…" : "Sponge water over neck & legs (−HR)"}
+        </button>
+        <button onClick={present} disabled={hr > 64} style={bigBtn("#5a4632", hr > 64)}>
+          {hr <= 64 ? "Present to the vet" : "Not ready — HR above criteria"}
+        </button>
+      </div>
+    </div>
+  );
+
+  /* ---------- VETTING (the card) ---------- */
+  if (phase === "vetting" && vetCard) return (
+    <div style={shell}><style>{FONTS}</style>
+      <div style={{ padding: "24px 20px 8px" }}>
+        <div style={{ ...mono, fontSize: 11, letterSpacing: 2, color: "#8a8272" }}>RIDE CARD · {horse.name.toUpperCase()} · GATE {loopIdx + 1}</div>
+        <h1 style={{ ...h1, fontSize: 26, margin: "4px 0" }}>Veterinary inspection</h1>
+      </div>
+      <div style={{ margin: "6px 16px", ...cardStyle, padding: "6px 18px 14px" }}>
+        <VetRow label="Heart rate on presentation" value={`${vetCard.hr1} bpm`} ok={true} />
+        <VetRow label="CRI (after 40 m trot-out)" value={`${vetCard.hr1}/${vetCard.hr2}`} ok={vetCard.hr2 - vetCard.hr1 <= 4} />
+        <VetRow label="Gait" value={vetCard.lame ? "LAME" : "Sound"} grade={vetCard.gait} ok={!vetCard.lame} />
+        <VetRow label="Gut sounds" value={vetCard.gutGrade} grade={vetCard.gutGrade <= "B" ? "active" : "quiet"} ok={vetCard.gutGrade !== "D"} />
+        <VetRow label="Skin tenting / hydration" value={vetCard.skinGrade} ok={vetCard.skinGrade !== "D"} />
+        <VetRow label="Mucous membranes" value={hyd > 40 ? "Pink, moist" : "Tacky"} ok={hyd > 40} />
+        <div style={{ paddingTop: 12, ...mono, fontSize: 13, fontWeight: 600, color: vetCard.lame || vetCard.metabolic ? "#b03a24" : "#2e6b3f" }}>
+          {vetCard.lame || vetCard.metabolic ? "NOT FIT TO CONTINUE" : "FIT TO CONTINUE ✓"}
+        </div>
+      </div>
+      <div style={{ padding: "14px 16px" }}>
+        <button onClick={resolveVetting} style={bigBtn()}>{vetCard.lame || vetCard.metabolic ? "Accept the vet's call" : loopIdx === LOOPS.length - 1 ? "Cross the finish" : "To the hold"}</button>
+      </div>
+    </div>
+  );
+
+  /* ---------- HOLD ---------- */
+  if (phase === "hold") return (
+    <div style={shell}><style>{FONTS}</style>
+      <div style={{ padding: "26px 20px" }}>
+        <div style={{ ...mono, fontSize: 11, letterSpacing: 2, color: "#8a8272" }}>MANDATORY HOLD · 40 MIN</div>
+        <h1 style={{ ...h1, fontSize: 26, margin: "4px 0" }}>She eats. You breathe.</h1>
+        <p style={{ fontSize: 13.5, color: "#5c5546" }}>Wet mash, hay, water in front of her. Hydration and gut sounds recover here — this rest is part of the sport.</p>
+      </div>
+      <div style={{ display: "flex", justifyContent: "center" }}><Horse horse={horse} animDur={0} scale={1} /></div>
+      <div style={{ margin: "10px 16px", ...cardStyle, padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#6e6753" }}><span>Hold time</span><span style={mono}>{Math.round(holdMin)} / 40 min</span></div>
+        <Bar value={holdMin} max={40} color="#5a4632" />
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#6e6753", marginTop: 10 }}><span>Hydration {Math.round(hyd)}</span><span>Gut {Math.round(gut)}</span><span style={mono}>{Math.round(hr)} bpm</span></div>
+      </div>
+      <div style={{ padding: "10px 16px" }}>
+        <button onClick={() => startLoop(loopIdx + 1)} style={{ ...bigBtn("#8a8272") }}>Skip ahead to out-time</button>
+      </div>
+    </div>
+  );
+
+  /* ---------- RESULTS ---------- */
+  if (phase === "results") return (
+    <div style={shell}><style>{FONTS}</style>
+      <div style={{ padding: "30px 20px 10px" }}>
+        <div style={{ ...mono, fontSize: 11, letterSpacing: 2, color: "#8a8272" }}>COMPLETION · ALL GATES PASSED</div>
+        <h1 style={{ ...h1, fontSize: 32, margin: "6px 0" }}>Fit to continue.</h1>
+        <p style={{ fontSize: 14, color: "#5c5546" }}>{horse.name} finished 36 km sound, hydrated, and eating. That's the whole sport.</p>
+      </div>
+      <div style={{ display: "flex", justifyContent: "center" }}><Horse horse={horse} animDur={1.15} scale={1} /></div>
+      <div style={{ margin: "10px 16px", ...cardStyle, padding: "6px 18px 14px" }}>
+        <VetRow label="Total elapsed time" value={fmtTime(totalMin)} />
+        <VetRow label="Best Condition score" value={`${bcScore} / 100`} ok={bcScore > 70} />
+        {bcNotes.map((n) => (
+          <VetRow key={n.loop} label={`Gate ${n.loop} presentation`} value={`${n.presentation} min · ${n.hr1} bpm`} grade={`gut ${n.gutGrade} / skin ${n.skinGrade}`} />
+        ))}
+      </div>
+      <div style={{ padding: "14px 16px" }}>
+        <button onClick={() => window.location.reload()} style={bigBtn()}>Ride again</button>
+      </div>
+    </div>
+  );
+
+  /* ---------- ELIMINATED ---------- */
+  if (phase === "eliminated") return (
+    <div style={shell}><style>{FONTS}</style>
+      <div style={{ padding: "30px 20px 10px" }}>
+        <div style={{ ...mono, fontSize: 11, letterSpacing: 2, color: "#b03a24" }}>ELIMINATED · LOOP {loopIdx + 1}</div>
+        <h1 style={{ ...h1, fontSize: 30, margin: "6px 0" }}>The horse comes first.</h1>
+        <p style={{ fontSize: 14, color: "#5c5546" }}>{elimReason}</p>
+      </div>
+      <div style={{ display: "flex", justifyContent: "center", opacity: 0.85 }}><Horse horse={horse} animDur={0} scale={1} /></div>
+      <div style={{ margin: "10px 16px", ...cardStyle, padding: 14, fontSize: 13, color: "#5c5546" }}>
+        Every elimination is the system working: the checks exist so no horse is ridden past its limits. Pace slower, drink earlier, ease off on rocky ground.
+      </div>
+      <div style={{ padding: "14px 16px" }}>
+        <button onClick={() => window.location.reload()} style={bigBtn()}>Back to the stable</button>
+      </div>
+    </div>
+  );
+
+  return null;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<EnduranceRide />);
+</script>
+</body>
+</html>
